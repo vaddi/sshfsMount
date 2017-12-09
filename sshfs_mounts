@@ -1,0 +1,198 @@
+#!/usr/local/bin/bash
+#
+
+# array of Devices (mount path)
+declare -A DEVICES=(
+  [home]='/Users/USERNAME/'
+)
+
+DEVICEKEYS=(${!DEVICES[@]}) # normal array containing all the keys from the associative array
+
+# array of Targets (destination path)
+declare -A TARGETS=(
+  [home]='USERNAME@192.168.1.100:/home/USERNAME'
+)
+
+TARGETKEYS=(${!TARGETS[@]})
+
+# check if sshfs is installed
+if [ ! -e "$( which sshfs )" ]; then
+  echo "sshfs is not installed, please install first:"
+  echo "brew install sshfs"
+  exit 1
+fi
+
+
+# Colorized status output
+OK="\x1B[0;32mOK\x1B[0m"
+FAIL="\x1B[0;31mFAIL\x1B[0m"
+
+#
+# functions
+# 
+
+function check_input {
+	if [ $1 -eq 0 ]; then
+    echo -e "$OK"
+	else
+		echo -e "$FAIL"
+	fi
+}
+
+isMounted() {
+  [[ ! -z "$1" ]] || { echo "isMounted get an empty value"; exit 1; }
+  DEV=$1
+  # is directory?
+  if [ -d "${DEVICES[${DEV}]}" ]; then
+    # is empty?
+    if [ ! -z "$(ls -A ${DEVICES[${DEV}]})" ]; then
+      # listed in mount?
+      if [ ! -z "$( mount | grep ${TARGETS[${DEV}]})" ]; then
+        echo -n 1;
+      else
+        echo -n 0;
+      fi
+    else
+      echo -n 0;
+    fi
+  else
+    echo -n 0;
+  fi
+}
+
+printDev() {
+  echo -e "ID \tDevice \tPath (\x1B[0;32mmounted\x1B[0m|\x1B[0;31munmounted\x1B[0m) \t Destination"
+  for (( I=0; $I < ${#DEVICES[@]}; I+=1 )); 
+  do 
+    DEVICEKEY=${DEVICEKEYS[$I]}; 
+    TARGETKEY=${TARGETKEYS[$I]};
+    echo -n -e "$I \t\x1B[034m$DEVICEKEY\x1B[0m \t"
+    MOUNTED=$(isMounted $DEVICEKEY)
+    if [ "$MOUNTED" == "1" ]; then
+      echo -n -e "\x1B[0;32m${DEVICES[${DEVICEKEY}]}\x1B[0m"
+    else
+      echo -n -e "\x1B[0;31m${DEVICES[${DEVICEKEY}]}\x1B[0m"
+    fi
+    echo -e "\t\t ${TARGETS[${TARGETKEY}]}";
+  done
+}
+
+createPath() {
+  if [ ! -d $1 ]; then
+    mkdir -p $1 >&2
+    check_input $?
+  fi
+}
+
+deletePath() {
+  if [ -d $1 ];then
+    if [ -z "$(ls -A ${1})" ]; then
+      rm -r $1 >&2
+      check_input $?
+    else
+      echo "Dir not empty, abort delete!"
+    fi
+  fi
+}
+
+mountDev() {
+  [[ ! -z "$1" ]] || { echo "mountDev get an empty value"; exit 1; }
+  DEV=$1
+  MOUNTED=$(isMounted $DEV)
+  if [ "$MOUNTED" == "0" ]; then
+#   echo "Mounting $DEV :: ${TARGETS[${DEV}]} :: ${DEVICES[${DEV}]}"
+    echo -n "Create Folder ${DEVICES[${DEV}]} : "
+    createPath ${DEVICES[${DEV}]}
+    echo -n "Mounting ${TARGETS[${DEV}]} : "
+    sshfs ${TARGETS[${DEV}]} ${DEVICES[${DEV}]} -ovolname=${DEV} >&2
+    check_input $?
+  else
+    echo "Device ${TARGETS[${DEV}]} allready mounted, abort."
+  fi
+}
+
+umountDev() {
+  [[ ! -z "$1" ]] || { echo "umountDev get an empty value"; exit 1; }
+  DEV=$1
+  MOUNTED=$(isMounted $DEV)
+  if [ "$MOUNTED" == "1" ]; then
+#   echo "Unmounting $DEV :: ${TARGETS[${DEV}]} :: ${DEVICES[${DEV}]}"
+    diskutil umount ${DEVICES[${DEV}]} >&2
+    if [ $? == 0 ]; then
+      echo -n "Delete Folder ${DEVICES[${DEV}]} : "
+      deletePath ${DEVICES[${DEV}]}
+    fi
+  else
+    echo "Device ${TARGETS[${DEV}]} not mounted."
+  fi
+}
+
+mountAll() {
+  for (( I=0; $I < ${#DEVICES[@]}; I+=1 ));
+  do
+    mountDev ${DEVICEKEYS[$I]};
+  done
+}
+
+umountAll() {
+  for (( I=0; $I < ${#DEVICES[@]}; I+=1 ));
+  do
+    umountDev ${DEVICEKEYS[$I]};
+  done
+}
+
+usage () {
+  echo "$0 [m|u|l|h] [ARG]"
+  echo "-m <DEVICE|all> - Mounting a soecial device or all devices"
+  echo "-u <DEVICE|all> - Unmounting a special device or all devices"
+  echo "-l - Print list of all Devices:"
+  echo "--- devices ---"
+  printDev
+  echo "--- end of devices ---"
+  echo "-h - Prints this help message"
+  echo
+}
+
+# catch empty params & print usage
+if [[ ! $@ =~ ^\-.+ ]]
+then
+  usage;
+fi
+
+while getopts "m:u:lh" opt; do
+  case $opt in
+    l)
+      printDev
+      ;;
+    m)
+      if [ "$OPTARG" == "all" ]; then
+        mountAll >&2
+      else
+        mountDev "$OPTARG" >&2
+      fi
+      ;;
+    u)
+      if [ "${OPTARG}" == "all" ]; then
+        umountAll >&2
+      else
+        umountDev ${OPTARG} >&2
+      fi
+      ;;
+    h)
+      usage >&2
+      exit 0
+      ;;
+    \?)
+      echo "Invalid option: -$OPTARG" >&2
+      exit 1
+      ;;
+    :)
+      echo "Option -$OPTARG requires an argument." >&2
+      exit 1
+      ;;
+  esac
+done
+
+exit 0
+
+# end of file
